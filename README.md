@@ -6,12 +6,25 @@
 
 **Using this tool is a violation of Nexus Mods policy.** Automated downloading outside their official API or website methods can lead to restrictions or bans on your Nexus Mods account. The creator of this tool takes **no responsibility** for any consequences resulting from its use. **Proceed at your own risk.**
 
+# Please Support Nexus
 ---
+
+### Installation
+
+```bash
+git clone https://github.com/amssss0/Wabbajack-fast-downloader2.git
+cd ./Wabbajack-fast-downloader2
+pip install -r requirements.txt
+python gui.py
+```
+
+---
+
 
 ### How to Use (Updated Process)
 
 1.  **Extract Mod List:**
-    *   First, use the `"Extract"` button within the tool to process your Wabbajack mod list file (`.wabbajack`).
+    *   First, use the `"Extract"` button within the tool to process your Wabbajack mod list file (`.wabbajack`). This will create a output.csv listing all the mods. You only need to do this once.
 
 2.  **Enter Session ID:**
     *   You need to provide your `nexusmods_session` value in the `"YOUR NEXUS SESSIONID"` field.
@@ -47,67 +60,14 @@
 
 > **Project Origin:** This project was inspired by the need for a faster mod downloading process for Wabbajack-generated modlists, originating from [this GitHub issue](https://github.com/parsiad/nexus-autodl/issues/17).
 
-## How It Works
-
-1. **Modlist Extraction:** Parses the JSON modlist file to extract mod IDs and file IDs, generating download links for each mod on Nexus Mods.
-2. **Batch Download:** Opens the generated download links in batches using the `webbrowser` module to bypass download limits and speed up the process.
-
 
 ## Requirements
 
 - [Python 3.x](https://www.python.org)
-- [Tampermonkey](https://www.tampermonkey.net)
-- [Tampermonkey plugin to remove Nexus Mods wait time](https://greasyfork.org/en/scripts/394039-nexus-no-wait)
 
 ## Executable Usage | GUI Usage
 
-<img src="https://github.com/user-attachments/assets/1146b16e-8112-4d86-a8e3-42ea1c746d16" width="400" alt="preview">
-
-1. Download the executable from [here](https://github.com/M1n-74316D65/Wabbajack-fast-downloader/releases)
-
-2. Run the executable
-
-3. Select the '*.wabbajack' modlist file
-
-4. Click 'Extract'
-
-5. Click 'Batch Download' to download links in batches
-
-## Terminal Usage | CLI Usage
-
-1. **Clone or Download Repository:**
-
-   ```bash
-   git clone https://github.com/M1n-74316D65/Wabbajack-fast-downloader.git
-   ```
-
-2. **Locate and Extract Modlist File:**
-
-   The modlist file is located within the Wabbajack modlist package, e.g., `3.2.0.1\downloaded_mod_lists\wj-featured@@\_tpf-fo4.wabbajack`. Use tools like 7-Zip or PeaZip to extract it.
-
-3. **Place Modlist File:**
-
-   Place the extracted Wabbajack modlist JSON file in the project directory.
-
-4. **Extract Modlist Data:**
-
-   Run the script to generate download links:
-
-   ```bash
-   python extract_modlist.py
-   ```
-
-   This will create an `output.txt` file with the download links.
-
-5. **Batch Download:**
-
-   Run the batch download script to start downloading mods in batches:
-
-   ```bash
-   python batch_download.py
-   ```
-
-   The script will open download links in batches. Let the downloads complete, and press Enter in the terminal for the next batch.
+<img src="docs/Screenshot.png" width="800" alt="preview">
 
 ## Acknowledgments
 
