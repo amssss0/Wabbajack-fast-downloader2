@@ -6,29 +6,49 @@ import aiohttp
 import aiofiles
 from tqdm import tqdm
 import requests
+import cloudscraper
 
 def get_nexusmods_download_url(url, cookie_str):
     """Get direct download URL from a Nexus Mods page URL."""
-    # Extract file_id using regex
     file_id = re.search(r'file_id=(\d+)', url).group(1)
 
-    # Set up session with cookies
-    session = requests.Session()
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'mobile': False
+        }
+    )
+
+    cookies = {}
+    essential_cookies = ['nexusmods_session']
     for cookie in cookie_str.split(';'):
         if cookie.strip():
             name, value = cookie.strip().split('=', 1)
-            session.cookies.set(name, value, domain='.nexusmods.com', path='/')
+            if any(essential_cookie in name for essential_cookie in essential_cookies):
+                cookies[name] = value
+    
+    scraper.cookies.update(cookies)
 
-    # Generate download URL
-    response = session.post(
+    headers = {
+        'origin': 'https://www.nexusmods.com',
+        'referer': url,
+        'x-requested-with': 'XMLHttpRequest',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    }
+    scraper.headers.update(headers)
+
+    response = scraper.post(
         'https://www.nexusmods.com/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl',
-        headers={'Content-Type': 'application/x-www-form-urlencoded'},
         data={'fid': file_id, 'game_id': 1704}
     )
 
     if response.status_code == 200:
-        return response.json().get('url')
-    return f"Error: {response.status_code}"
+        try:
+            return response.json().get('url')
+        except ValueError:
+            return f"Error: Failed to decode JSON. Response: {response.text}"
+    return f"Error: {response.status_code}, Body: {response.text}"
 
 class DownloadManager:
     def __init__(self):
