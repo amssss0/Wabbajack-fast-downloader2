@@ -6,7 +6,7 @@
 
 **Using this tool is a violation of Nexus Mods policy.** Automated downloading outside their official API or website methods can lead to restrictions or bans on your Nexus Mods account. The creator of this tool takes **no responsibility** for any consequences resulting from its use. **Proceed at your own risk.**
 
-# Please Support Nexus
+# Please Support Nexus 🙏
 ---
 
 ### Installation
