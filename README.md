@@ -67,7 +67,7 @@ python gui.py
 
 ## Executable Usage | GUI Usage
 
-<img src="docs/Screenshot.png" width="800" alt="preview">
+<img src="docs/Screenshot2.png" width="800" alt="preview">
 
 ## Acknowledgments
 

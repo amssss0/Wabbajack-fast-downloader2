@@ -1,0 +1,23 @@
+**Features & Enhancements**
+
+*   **Multiple Verification Methods:**
+    *   You can now choose between three methods for verifying files: Hash Check, File Size Check, or simply checking for File Existence.
+    *   The UI has been updated with radio buttons to select your preferred mode.
+
+*   **Configurable Game ID:**
+    *   The Nexus Mods Game ID is no longer hardcoded in the application.
+    *   The list of games and their IDs is now stored in `config.json` so you can easily add or edit them.
+
+*   **Interactive Game Editor:**
+    *   A new "Game Editor" has been added to the UI.
+    *   You can now add, edit, and delete game profiles directly from the application.
+
+*   **UI & UX Improvements:**
+    *   **Color-Coded UI:** The application now has an improved color theme. Primary buttons are accented, and section headers are highlighted.
+    *   **Colored Logging:** The "Output" and "Information" panels are now color-coded. Success messages are green, errors are red, and other messages are colored for readability.
+    *   **Window Resize Persistence:** The application now remembers its window size and position between sessions.
+    *   **Improved Layout:** The Game Editor layout has been adjusted to be side-by-side for easier use.
+
+*   **Command-Line Script:**
+    *   A `batch_download.py` script was created to run the download process directly from the command line, which helps with debugging.
+

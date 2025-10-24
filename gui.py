@@ -1,8 +1,10 @@
+import logging
 import os
 import csv
 import json
 import sv_ttk
 import xxhash
+import requests
 import base64
 import struct
 import threading
@@ -20,10 +22,13 @@ from extract_modlist import generate_url, write_to_csv
 class ThemeManager:
     COLORS = {
         'dark': { 
-            'bg': '#1a1a1a',
-            'fg': '#ffffff',
+            'bg': '#1e1e1e',
+            'fg': '#d4d4d4',
             'accent': '#3d3d3d',
-            'highlight': '#0078d4'
+            'highlight': '#007acc',
+            'success': '#28a745',
+            'warning': '#ffc107',
+            'error': '#dc3545'
         }
     }
 
@@ -34,10 +39,11 @@ class ThemeManager:
         colors = ThemeManager.COLORS['dark']
 
         style.configure('TFrame', background=colors['bg'])
-        style.configure('TLabelframe', background=colors['bg'], padding=8, borderwidth=0)
-        style.configure('TLabelframe.Label', font=('Segoe UI', 8),
-                        background=colors['bg'], foreground=colors['fg'])
-        style.configure('TButton', padding=4, borderwidth=0)
+        style.configure('TLabelframe', background=colors['bg'], padding=8, borderwidth=1, relief="solid")
+        style.configure('TLabelframe.Label', font=('Segoe UI', 9, 'bold'),
+                        background=colors['bg'], foreground=colors['highlight'])
+        style.configure('TButton', padding=6, borderwidth=0, font=('Segoe UI', 9))
+        style.configure('Accent.TButton', background=colors['highlight'], foreground=colors['fg'])
         style.configure('TEntry', fieldbackground=colors['accent'], borderwidth=0)
         style.configure('Horizontal.TProgressbar', thickness=4,
                        background=colors['highlight'])
@@ -47,10 +53,23 @@ class ConsoleOutput(tk.Text):
     def __init__(self, master: tk.Widget, **kwargs) -> None:
         super().__init__(master, **kwargs)
         self.config(state="disabled")
+        self.tag_configure("SUCCESS", foreground="#28a745")
+        self.tag_configure("ERROR", foreground="#dc3545")
+        self.tag_configure("DEBUG", foreground="#6c757d")
+        self.tag_configure("INFO", foreground="#d4d4d4") # Default text color
 
     def print(self, text: str) -> None: 
         self.config(state="normal")
-        self.insert(tk.END, text + "\n")
+        
+        tag_to_apply = "INFO" # Default to INFO tag
+        if text.startswith("["):
+            end_tag_index = text.find("]")
+            if end_tag_index != -1:
+                tag = text[1:end_tag_index]
+                if tag in ["SUCCESS", "ERROR", "DEBUG", "INFO"]:
+                    tag_to_apply = tag
+
+        self.insert(tk.END, text + "\n", tag_to_apply)
         self.see(tk.END)
         self.config(state="disabled")
 
@@ -131,82 +150,150 @@ class Downloader:
         except Exception as e:
             self.log(f"Error saving state: {e}", error=True)
 
-    def verify_and_update_state(self, filepath: str, expected_hash: str, url: str, success: bool):
+    def verify_and_update_state(self, filepath: str, expected_hash: str, expected_size: str, url: str, success: bool):
         try:
             normalized_path = os.path.abspath(filepath)
             
             if success:
-                current_hash = self.calculate_file_hash_base64(normalized_path)
-                verified = current_hash == expected_hash
-                self.state[normalized_path] = {
-                    'hash': expected_hash,
-                    'verified': verified
-                }
-                self.save_state()  # Save state immediately after download
-                self.log(f"Verification {'succeeded' if verified else 'failed'} for {filepath}")
+                mode = self.app.verification_mode_var.get()
+                verified = False
+                verification_details = ""
+
+                if mode == "Skip":
+                    verified = True
+                    verification_details = "skipped (assumed success)"
+                elif mode == "Size":
+                    if not expected_size:
+                        verified = False
+                        verification_details = "failed (size missing in CSV)"
+                    else:
+                        actual_size = os.path.getsize(normalized_path)
+                        verified = actual_size == int(expected_size)
+                        verification_details = f"succeeded with size check (Expected: {expected_size}, Actual: {actual_size})" if verified else f"failed size check (Expected: {expected_size}, Actual: {actual_size})"
+                else: # Default to Hash
+                    if not expected_hash:
+                        verified = False
+                        verification_details = "failed (hash missing in CSV)"
+                    else:
+                        actual_hash = self.calculate_file_hash_base64(normalized_path)
+                        verified = actual_hash == expected_hash
+                        verification_details = "succeeded with hash check" if verified else "failed hash check"
+
+                self.log(f"Verification {verification_details} for {os.path.basename(filepath)}.", success=verified, error=not verified)
+                if expected_hash:
+                    self.state[expected_hash] = {
+                        'path': normalized_path,
+                        'verified': verified
+                    }
             else:
-                self.state[normalized_path] = {'hash': None, 'verified': False}
-                self.save_state()
-                self.log(f"Download failed: {url}", error=True)
+                self.log(f"Download failed for {os.path.basename(filepath)}", error=True)
+                if expected_hash:
+                    self.state[expected_hash] = {'path': None, 'verified': False}
+            
+            self.save_state()
         
         except Exception as e:
-            self.log(f"Verification failed: {e}", error=True)
-            self.state[normalized_path] = {'hash': None, 'verified': False}
+            self.log(f"Error during verification for {os.path.basename(filepath)}: {e}", error=True)
+            if expected_hash:
+                self.state[expected_hash] = {'path': None, 'verified': False}
             self.save_state()
 
     def process_csv_row(self, row: dict):
-        url = row['URL']
-        expected_hash = row['Hash']
-        name = row['Name']
+        url = row.get('URL')
+        expected_hash = row.get('Hash')
+        expected_size = row.get('Size')
+        name = row.get('Name')
+
+        if not url or not name:
+            self.log(f"Skipping row with missing URL or Name: {row}", debug=True)
+            self.processed_files += 1
+            self.app.update_progress(self.processed_files, self.total_files)
+            return
+
         filepath = os.path.join(self.app.download_location_var.get(), name)
 
-        if self.check_existing_file(filepath, expected_hash):
+        if self.check_existing_file(filepath, expected_hash, expected_size):
             self.processed_files += 1
             self.app.update_progress(self.processed_files, self.total_files)
             return
 
         self.download_queue.put((url, filepath))
-        self.pending_verifications.append((filepath, expected_hash, url))
+        self.pending_verifications.append((filepath, expected_hash, expected_size, url))
 
-    def check_existing_file(self, filepath: str, expected_hash: str) -> bool:
-        """Check if file exists and is valid"""
-        try:
-            # Check if file path is properly normalized
-            normalized_path = os.path.abspath(filepath)
-            
-            # Case 1: File exists in state
-            if normalized_path in self.state:
-                stored = self.state[normalized_path]
-                if stored.get('verified', False):
-                    if stored['hash'] == expected_hash:
-                        self.log(f"File verified in state: {filepath}", debug=True)
+    def check_existing_file(self, filepath: str, expected_hash: str, expected_size: str) -> bool:
+        """Check if file exists and is valid based on the selected verification mode."""
+        mode = self.app.verification_mode_var.get()
+
+        # Check for file in state using hash as key
+        if expected_hash and expected_hash in self.state:
+            state_entry = self.state[expected_hash]
+            state_path = state_entry.get('path')
+            if state_entry.get('verified') and state_path and os.path.exists(state_path):
+                self.log(f"File found in state: {os.path.basename(state_path)}", debug=True)
+                
+                if mode == "Skip":
+                    self.log(f"Verification skipped (from state): {os.path.basename(state_path)}", debug=True)
+                    return True
+                
+                try:
+                    if mode == "Size":
+                        if not expected_size or not expected_size.isdigit():
+                             return False # Force re-download if size is bad in CSV
+                        if os.path.getsize(state_path) == int(expected_size):
+                            self.log(f"Size check passed (from state): {os.path.basename(state_path)}", debug=True)
+                            return True
+                    elif mode == "Hash":
+                        # Already verified by hash if it's in state with verified:true
+                        self.log(f"Hash check passed (from state): {os.path.basename(state_path)}", debug=True)
                         return True
-                    else:
-                        self.log("State hash mismatch detected", debug=True)
-                else:
-                    self.log("Previously failed verification", debug=True)
-            
-            # Case 2: Check actual file hash
-            if os.path.exists(normalized_path):
-                current_hash = self.calculate_file_hash_base64(normalized_path)
-                if current_hash == expected_hash:
-                    # Update state immediately
-                    self.state[normalized_path] = {
-                        'hash': expected_hash,
-                        'verified': True
-                    }
-                    self.save_state()  # Save immediately after verification
-                    self.log(f"Verified existing file: {filepath}", debug=True)
+                except (OSError, ValueError) as e:
+                    self.log(f"Error checking file from state ({state_path}): {e}. Re-checking.", debug=True)
+                    # Fall through to checking the original path
+
+        # Fallback to checking the path from the CSV (for files from old versions or state errors)
+        normalized_path = os.path.abspath(filepath)
+        if not os.path.exists(normalized_path):
+            self.log(f"File not found at expected path: {os.path.basename(filepath)}, will download.")
+            return False
+
+        # File exists at old path, now check based on mode
+        if mode == "Skip":
+            self.log(f"Verification skipped, file exists: {os.path.basename(filepath)}", debug=True)
+            return True
+
+        elif mode == "Size":
+            try:
+                if not expected_size or not expected_size.isdigit():
+                    self.log(f"Size check failed: 'Size' is missing or invalid in CSV for {os.path.basename(filepath)}. Re-downloading.")
+                    return False
+                actual_size = os.path.getsize(normalized_path)
+                if actual_size == int(expected_size):
+                    self.log(f"Size check passed for {os.path.basename(filepath)}", debug=True)
                     return True
                 else:
-                    self.log("File hash mismatch detected", debug=True)
+                    self.log(f"Size mismatch for {os.path.basename(filepath)} (Expected: {expected_size}, Actual: {actual_size}). Re-downloading.")
+                    return False
+            except (ValueError, TypeError) as e:
+                self.log(f"Size check failed for {os.path.basename(filepath)} due to error: {e}. Re-downloading.")
+                return False
+
+        else: # Default to Hash mode
+            if not expected_hash:
+                self.log(f"Hash check failed: 'Hash' is missing in CSV for {os.path.basename(filepath)}. Re-downloading.")
+                return False
+            
+            actual_hash = self.calculate_file_hash_base64(normalized_path)
+            if actual_hash == expected_hash:
+                self.log(f"Hash check passed (re-calculated): {os.path.basename(filepath)}", debug=True)
+                # Update state with the correct key
+                self.state[expected_hash] = {'path': normalized_path, 'verified': True}
+                self.save_state()
+                return True
             else:
-                self.log("File not found, will download.", debug=True)
-        
-        except Exception as e:
-            self.log(f"Verification error: {str(e)}", error=True)
-        
-        return False
+                self.log(f"Hash mismatch for {os.path.basename(filepath)}. Re-downloading.")
+                return False
+            
+        return False # Default to re-download
 
     def download_batch(self):
         urls = []
@@ -224,31 +311,42 @@ class Downloader:
 
         try:
             cookie = "nexusmods_session="+self.app.session_var.get()
-            _, results = download_nexus_mods(urls, filepaths, cookie)
-            return [(url_map[url], success) for url, success in zip(urls, results)]
+            game_id = self.app.game_id_var.get()
+
+            if not game_id:
+                self.log(f"Game ID is not set. Please fetch game details first.", error=True)
+                return [(url_map[url], False) for url in urls]
+
+            _, results = download_nexus_mods(urls, filepaths, cookie, game_id, logger=self.log)
+            return [(url_map[url], result) for url, result in zip(urls, results)]
         except Exception as e:
             self.log(f"Batch download error: {e}", error=True)
             return [(url_map[url], False) for url in urls]
 
     def process_results(self, results: list):
-        for filepath, success in results:
+        for filepath, result in results:
             verification_info = next((v for v in self.pending_verifications if v[0] == filepath), None)
             if verification_info:
-                fp, expected_hash, url = verification_info
-                self.verify_and_update_state(fp, expected_hash, url, success)
+                fp, expected_hash, expected_size, url = verification_info
+
+                is_success = bool(result)
+                actual_filepath = result if is_success else fp
+
+                self.verify_and_update_state(actual_filepath, expected_hash, expected_size, url, is_success)
                 self.pending_verifications.remove(verification_info)
                 self.processed_files += 1
                 self.app.update_progress(self.processed_files, self.total_files)
 
     def run(self):
         try:
+            self.log("Download process started.")
             self.queue_size = self.app.queue_size_var.get()
             self.load_state()
             os.makedirs(self.app.download_location_var.get(), exist_ok=True)
 
-            with open(self.csv_file, 'r', newline='', encoding='utf-8') as f:
+            with open(self.csv_file, 'r', newline='', encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
-                rows = sorted(reader, key=lambda x: int(x.get('Size', 0)))
+                rows = sorted(reader, key=lambda x: int(x.get('Size') or 0))
                 #rows = rows[4033+100:]
                 #rows = sorted(reader, key=lambda x: int(x.get('Size', 0)), reverse=True)
                 self.total_files = len(rows)
@@ -267,24 +365,37 @@ class Downloader:
             self.save_state()
             self.app.download_complete()
 
-    def log(self, message: str, error: bool = False, debug: bool = False):
-        """Centralized logging with level control"""
+    def log(self, message: str, error: bool = False, debug: bool = False, success: bool = False):
+        """Centralized logging to GUI and file with level control"""
+        # 1. Log to file
+        if error:
+            logging.error(message)
+        elif debug:
+            if self.app.debug_mode.get():
+                logging.debug(message)
+        else: # Includes success messages
+            logging.info(message)
+
+        # 2. Log to GUI console
         if debug and not self.app.debug_mode.get():
             return
         
-        level = "ERROR" if error else "DEBUG" if debug else "INFO"
+        level = "INFO"
+        if error:
+            level = "ERROR"
+        elif success:
+            level = "SUCCESS"
+        elif debug:
+            level = "DEBUG"
+            
         formatted_msg = f"[{level}] {message}"
-        
-        # Only show ERROR messages when not in debug mode
-        if not self.app.debug_mode.get() and level == "DEBUG":
-            return
-        
         self.app.queue_put(('log', formatted_msg))
 
 # Main Application
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.setup_logging()
         self.output_file_path = 'output.csv'
         self.links_amount = 0
         self.processed_links = tk.IntVar()
@@ -293,50 +404,95 @@ class Application(tk.Tk):
         self.downloader: Optional[Downloader] = None
         self.queue_size_var = tk.IntVar(value=5)
         self.session_var = tk.StringVar(value="YOUR NEXUS SESSIONID")
-        self.download_location_var = tk.StringVar(value="D:/Games/download/Location")
+        self.download_location_var = tk.StringVar(value="downloads")
+        self.verification_mode_var = tk.StringVar(value="Size")
+        self.game_domain_var = tk.StringVar(value="")
+        self.game_name_var = tk.StringVar()
+        self.game_id_var = tk.StringVar()
         
-        # Load saved data
-        self.load_data()
+        self.config_data = {}
+        self.load_data() # Load data first
         
-        # Set up exit protocol
         self.protocol("WM_DELETE_WINDOW", self.save_and_exit)
 
-        self.setup_window()
+        self.setup_window() # Then setup window with loaded data
         self.create_widgets()
         self.check_output_file()
+        self.set_game_domain_from_csv()
         
         
+    def setup_logging(self):
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filename='downloader.log',
+            filemode='w' # Overwrite log on each run
+        )
+        logging.info("Logging initialized.")
+
     def load_data(self):
         try:
             with open('config.json', 'r') as f:
-                data = json.load(f)
-                # Use stored value if exists, keep default otherwise
-                self.session_var.set(data.get('nexusmods_session', self.session_var.get()))
-                self.download_location_var.set(data.get('download_dir', self.download_location_var.get()))
-                self.queue_size_var.set(data.get('parallel_queue_size', self.queue_size_var.get()))
-        except FileNotFoundError:
-            pass  # Keep default value if no config exists
+                self.config_data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.config_data = {}
+
+        data = self.config_data
+        self.session_var.set(data.get('nexusmods_session', self.session_var.get()))
+        self.download_location_var.set(data.get('download_dir', self.download_location_var.get()))
+        self.queue_size_var.set(data.get('parallel_queue_size', self.queue_size_var.get()))
+        self.verification_mode_var.set(data.get('verification_mode', self.verification_mode_var.get()))
+        self.game_domain_var.set(data.get('game_domain', self.game_domain_var.get()))
 
     def save_data(self):
         data = {
             'nexusmods_session': self.session_var.get(),
-            'download_dir':self.download_location_var.get(),
+            'download_dir': self.download_location_var.get(),
             'parallel_queue_size': self.queue_size_var.get(),
+            'verification_mode': self.verification_mode_var.get(),
+            'game_domain': self.game_domain_var.get(),
+            'window_geometry': self.geometry(),
         }
         with open('config.json', 'w') as f:
             json.dump(data, f, indent=2)
 
     def save_and_exit(self):
         self.save_data()
+        self.quit()
         self.destroy()
+
+    def set_game_domain_from_csv(self):
+        if not os.path.exists(self.output_file_path):
+            return
+
+        try:
+            with open(self.output_file_path, 'r', newline='', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                first_row = next(reader, None)
+                if first_row:
+                    url = first_row.get('URL')
+                    if url:
+                        try:
+                            game_domain = url.split('/')[3]
+                            self.game_domain_var.set(game_domain)
+                            self.console.print(f"[INFO] Found game domain from CSV: {game_domain}")
+                            self.fetch_game_details() # Automatically fetch details
+                        except IndexError:
+                            self.console.print("[ERROR] Could not parse game domain from the first URL in output.csv.")
+        except Exception as e:
+            self.console.print(f"[ERROR] Error reading output.csv to determine game domain: {e}")
 
     def setup_window(self) -> None:
         self.setup_windows_specific()
         ThemeManager.setup_theme(self)
 
         self.title('Wabbajack Fast Downloader2')
-        self.geometry('1000x600')  # Increased width to 1000
+        self.geometry('1000x600')  # Set default
         self.minsize(800, 500)
+
+        # Apply saved geometry if it exists, overriding the default
+        if geometry := self.config_data.get('window_geometry'):
+            self.geometry(geometry)
         
 
     def setup_windows_specific(self) -> None:
@@ -363,11 +519,14 @@ class Application(tk.Tk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
+        self.main_container.grid_columnconfigure(0, weight=2)
+        self.main_container.grid_columnconfigure(1, weight=1)
+
         self.create_file_section()
         self.create_progress_section()
         self.create_console_section()
         self.create_right_panel()
-        self.create_debug_section()
+        self.create_settings_section()  # Renamed method
 
     def create_file_section(self):
         file_frame = ttk.LabelFrame(self.main_container, text="Mod List Selection", padding=5)
@@ -380,7 +539,7 @@ class Application(tk.Tk):
         browse_btn = ttk.Button(file_frame, text="Browse", command=self.browse_file, width=8)
         browse_btn.grid(row=0, column=1, padx=(0, 2))
 
-        extract_btn = ttk.Button(file_frame, text="Extract", command=self.extract_file, width=8)
+        extract_btn = ttk.Button(file_frame, text="Extract", command=self.extract_file, width=8, style="Accent.TButton")
         extract_btn.grid(row=0, column=2)
 
     def create_progress_section(self):
@@ -435,7 +594,8 @@ class Application(tk.Tk):
             button_location_frame,
             text="Download Batch",
             command=self.start_download,
-            width=15
+            width=15,
+            style="Accent.TButton"
         )
         download_btn.grid(row=0, column=0, padx=(0, 10))
 
@@ -469,13 +629,90 @@ class Application(tk.Tk):
         self.info_text = ConsoleOutput(right_panel_frame)
         self.info_text.grid(row=0, column=0, sticky="nsew")
 
-    def create_debug_section(self):
-        debug_frame = ttk.Frame(self.main_container)
-        debug_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    def create_settings_section(self):
+        settings_frame = ttk.Frame(self.main_container)
+        settings_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+
+        # --- Verification Method ---
+        verify_frame = ttk.LabelFrame(settings_frame, text="Verification Method")
+        verify_frame.pack(side=tk.LEFT, padx=(0, 10), fill="y", anchor="n")
+
+        ttk.Radiobutton(verify_frame, text="Hash Check", variable=self.verification_mode_var, value="Hash").pack(anchor="w", padx=5)
+        ttk.Radiobutton(verify_frame, text="File Size Check", variable=self.verification_mode_var, value="Size").pack(anchor="w", padx=5)
+        ttk.Radiobutton(verify_frame, text="Skip (File Exists)", variable=self.verification_mode_var, value="Skip").pack(anchor="w", padx=5)
+
+        # --- Game Settings ---
+        game_frame = ttk.LabelFrame(settings_frame, text="Game Selection")
+        game_frame.pack(side=tk.LEFT, padx=(0, 10), fill="y", anchor="n")
+
+        # Entry for game domain
+        domain_frame = ttk.Frame(game_frame)
+        domain_frame.pack(pady=5, padx=5, fill=tk.X)
+        ttk.Label(domain_frame, text="Game Domain:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(domain_frame, textvariable=self.game_domain_var).grid(row=0, column=1, sticky="ew")
+        ttk.Button(domain_frame, text="Fetch", command=self.fetch_game_details, style="Accent.TButton").grid(row=0, column=2, padx=(5,0))
+        domain_frame.columnconfigure(1, weight=1)
+
+        # Display for fetched details
+        details_frame = ttk.Frame(game_frame)
+        details_frame.pack(pady=5, padx=5, fill=tk.X)
+        ttk.Label(details_frame, text="Game Name:").grid(row=0, column=0, sticky="w")
+        ttk.Label(details_frame, textvariable=self.game_name_var).grid(row=0, column=1, sticky="w")
+        ttk.Label(details_frame, text="Game ID:").grid(row=1, column=0, sticky="w")
+        ttk.Label(details_frame, textvariable=self.game_id_var).grid(row=1, column=1, sticky="w")
+
+
+        # --- Other Settings ---
+        other_frame = ttk.Frame(settings_frame)
+        other_frame.pack(side=tk.LEFT, anchor="n")
 
         self.debug_mode = tk.BooleanVar(value=False)
-        debug_check = ttk.Checkbutton(debug_frame, text="Debug Mode", variable=self.debug_mode)
-        debug_check.pack(side=tk.LEFT, padx=5)
+        debug_check = ttk.Checkbutton(other_frame, text="Debug Mode", variable=self.debug_mode)
+        debug_check.pack(side=tk.LEFT, anchor="n")
+
+    def fetch_game_details(self):
+        game_domain = self.game_domain_var.get().strip()
+        if not game_domain:
+            messagebox.showerror("Input Error", "Game Domain Name cannot be empty.")
+            return
+
+        self.console.print(f"Fetching details for game: {game_domain}...")
+        try:
+            query = '''
+                query GetGameIdByDomainName($domainName: String!) {
+                    game(domainName: $domainName) {
+                        id
+                        name
+                    }
+                }
+            '''
+            payload = {
+                "query": query,
+                "variables": {"domainName": game_domain},
+                "operationName": "GetGameIdByDomainName"
+            }
+            headers = {"accept": "*/*", "content-type": "application/json"}
+            api_url = "https://api-router.nexusmods.com/graphql"
+
+            response = requests.post(api_url, headers=headers, data=json.dumps(payload))
+            response.raise_for_status()
+            data = response.json()
+
+            game_data = data.get('data', {}).get('game')
+            if game_data and game_data.get('id'):
+                game_id = str(game_data['id'])
+                game_name = game_data['name']
+                self.game_id_var.set(game_id)
+                self.game_name_var.set(game_name)
+                self.console.print(f"Successfully fetched details: {game_name} (ID: {game_id})")
+            else:
+                self.game_id_var.set("")
+                self.game_name_var.set("")
+                messagebox.showerror("API Error", f"Could not find game with domain: {game_domain}")
+        except Exception as e:
+            self.game_id_var.set("")
+            self.game_name_var.set("")
+            messagebox.showerror("Request Error", f"An error occurred: {e}")
 
     def browse_file(self):
         filename = filedialog.askopenfilename(filetypes=[("Wabbajack mod list file", "*.wabbajack")])
@@ -559,6 +796,16 @@ class Application(tk.Tk):
                 yield batch
 
     def start_download(self):
+        download_dir = self.download_location_var.get()
+        
+        # Validate the download directory before starting the thread
+        try:
+            os.makedirs(download_dir, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("Invalid Path", f"Could not create download directory:\n{download_dir}\n\nError: {e}")
+            self.console.print(f"ERROR: Invalid download directory: {download_dir}")
+            return
+
         if not self.downloader:
             self.downloader = Downloader(self, queue_size=self.queue_size_var.get())
         threading.Thread(target=self.downloader.run, daemon=True).start()
@@ -567,7 +814,7 @@ class Application(tk.Tk):
         self.progress['value'] = processed
         self.progress['maximum'] = total
         self.progress_label.config(text=f"{processed}/{total} files")
-        self.info_text.print(f"Processed: {processed}/{total} files")
+        self.info_text.print(f"[INFO] Processed: {processed}/{total} files")
 
     def set_total_files(self, total: int):
         self.links_amount = total
@@ -575,7 +822,7 @@ class Application(tk.Tk):
 
     def download_complete(self):
         messagebox.showinfo("Complete", "Download process finished")
-        self.info_text.print("Download process completed")
+        self.info_text.print("[SUCCESS] Download process completed")
 
     def queue_put(self, item):
         self.queue.put(item)

@@ -1,5 +1,8 @@
 {
   "nexusmods_session": "YOUR NEXUS SESSIONID",
-  "download_dir": "D:/Games/download/Location",
-  "parallel_queue_size": 5
+  "download_dir": "downloads",
+  "parallel_queue_size": 5,
+  "verification_mode": "Size",
+  "game_domain": "",
+  "window_geometry": "1147x672+283+207"
 }
